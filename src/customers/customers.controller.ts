@@ -20,11 +20,12 @@ export class CustomersController {
 
   @UseGuards(JwtAuthGuard)
   @Post()
-  async create(
-    @Body() body: { name: string; email: string; phone?: string; address?: string },
-  ) {
-    return this.customersService.createCustomer(body);
-  }
+create(@Body() body: { name: string; email: string; phone?: string; address?: string }, @Req() req) {
+  return this.customersService.create({
+    ...body,
+    user_id: req.user.id, // or however your auth stores it
+  });
+}
 
   @UseGuards(JwtAuthGuard)
   @Put(':id')
