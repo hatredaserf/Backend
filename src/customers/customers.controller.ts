@@ -1,43 +1,47 @@
-import { Controller, Get, Post, Put, Delete, Body, Param, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Body, Param, Req,UseGuards, ParseIntPipe,
+} from '@nestjs/common';
 import { CustomersService } from './customers.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 @Controller('customers')
+@UseGuards(JwtAuthGuard)
 export class CustomersController {
   constructor(private readonly customersService: CustomersService) {}
 
-  @UseGuards(JwtAuthGuard)
   @Get()
   async getAll() {
     return this.customersService.getAll();
   }
 
-  @UseGuards(JwtAuthGuard)
   @Get(':id')
-  async getOne(@Param('id') id: string) {
-    return this.customersService.findOne(+id);
+  async getOne(@Param('id', ParseIntPipe) id: number) {
+    return this.customersService.findOne(id);
   }
 
-  @UseGuards(JwtAuthGuard)
   @Post()
   async create(
-    @Body() body: { name: string; email: string; phone?: string; address?: string },
+    @Body() body: { user_id?: number; name: string; email?: string; phone?: string; address?: string },
+    @Req() req: any,
   ) {
-    return this.customersService.createCustomer(body);
+    // Uses user_id from body, falls back to authenticated JWT payload user ID
+    const userId = body.user_id ?? req.user?.user_id ?? req.user?.id;
+
+    return this.customersService.createCustomer({
+      ...body,
+      user_id: userId,
+    });
   }
 
-  @UseGuards(JwtAuthGuard)
   @Put(':id')
   async update(
-    @Param('id') id: string,
+    @Param('id', ParseIntPipe) id: number,
     @Body() body: { name?: string; email?: string; phone?: string; address?: string },
   ) {
-    return this.customersService.updateCustomer(+id, body);
+    return this.customersService.updateCustomer(id, body);
   }
 
-  @UseGuards(JwtAuthGuard)
   @Delete(':id')
-  async remove(@Param('id') id: string) {
-    return this.customersService.deleteCustomer(+id);
+  async remove(@Param('id', ParseIntPipe) id: number) {
+    return this.customersService.deleteCustomer(id);
   }
 }
