@@ -6,7 +6,10 @@ import { CustomersModule } from './customers/customers.module';
 import { OrdersModule } from './orders/orders.module';
 import { PaymentModule } from './payment/payment.module';
 import { DeliveryModule } from './delivery/delivery.module';
-
+import { CategoriesModule } from './categories/categories.module';
+import { RestaurantsModule } from './restaurants/restaurants.module';
+import { FoodItemsModule } from './fooditems/food-items.module';
+import { OrderItemsModule } from './orderitems/order-items.module';
 @Module({
   imports: [
     DatabaseModule,
@@ -16,6 +19,10 @@ import { DeliveryModule } from './delivery/delivery.module';
     OrdersModule,
     PaymentModule,
     DeliveryModule,
+    CategoriesModule,
+    RestaurantsModule,
+    FoodItemsModule,
+    OrderItemsModule
   ],
 })
 export class AppModule {}

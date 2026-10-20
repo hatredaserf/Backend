@@ -18,7 +18,6 @@ export class UsersController {
     return this.usersService.createUser(body.username, body.password, body.email);
   }
 
-  // Fixed: Call update user logic instead of deleteUser
   @UseGuards(JwtAuthGuard)
   @Put(':id')
   async update(
