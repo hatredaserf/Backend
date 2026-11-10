@@ -1,4 +1,8 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { UsersService } from '../users/users.service';
 import * as bcrypt from 'bcryptjs';
 import { JwtService } from '@nestjs/jwt';
@@ -10,10 +14,19 @@ export class AuthService {
     private jwtService: JwtService,
   ) {}
 
-  // 1. Added register method to match controller
-  async register(data: { username: string; password: string; email: string }) {
+  // Email is now optional
+  async register(data: { username: string; password: string; email?: string }) {
+    const existing = await this.usersService.findByUsername(data.username);
+    if (existing) {
+      throw new ConflictException('Username already taken');
+    }
+
     const hashedPassword = await bcrypt.hash(data.password, 10);
-    return this.usersService.createUser(data.username, hashedPassword, data.email);
+    return this.usersService.createUser(
+      data.username,
+      hashedPassword,
+      data.email ?? null,
+    );
   }
 
   async validateUser(username: string, pass: string) {
@@ -21,7 +34,7 @@ export class AuthService {
     if (!user) return null;
 
     const valid = await bcrypt.compare(pass, user.password);
-    // Fix: Match database schema field `user_id` instead of `user.id`
+    // Match database schema field `user_id` instead of `user.id`
     if (valid) return { user_id: user.user_id, username: user.username, user_role: user.user_role };
     return null;
   }
@@ -30,7 +43,7 @@ export class AuthService {
     const payload = { sub: user.user_id, username: user.username, role: user.user_role };
 
     const accessToken = await this.jwtService.signAsync(payload);
-    
+
     // Using JwtService for refresh tokens too
     const refreshToken = await this.jwtService.signAsync(payload, {
       secret: process.env.JWT_REFRESH_TOKEN_SECRET || 'refresh_secret',

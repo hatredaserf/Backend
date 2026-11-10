@@ -9,14 +9,25 @@ export class UsersService {
 
   private pool = () => this.db.getpool();
 
-  async createUser(username: string, hashedPassword: string, email: string, user_role = 'user') {
-    // Note: Accept already-hashed password from AuthService
+  async createUser(
+    username: string,
+    hashedPassword: string,
+    email?: string | null,
+    user_role = 'user',
+  ) {
+    // Accepts an already-hashed password from AuthService.
+    // mysql2 rejects undefined, so convert a missing email to null.
     const [result] = await this.pool().execute<ResultSetHeader>(
       'INSERT INTO usersx (username, password, email, user_role) VALUES (?, ?, ?, ?)',
-      [username, hashedPassword, email, user_role],
+      [username, hashedPassword, email ?? null, user_role],
     );
 
-    return { user_id: result.insertId, username, email, user_role };
+    return {
+      user_id: result.insertId,
+      username,
+      email: email ?? null,
+      user_role,
+    };
   }
 
   async findByUsername(username: string) {
