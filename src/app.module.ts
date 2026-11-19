@@ -10,6 +10,8 @@ import { CategoriesModule } from './categories/categories.module';
 import { RestaurantsModule } from './restaurants/restaurants.module';
 import { FoodItemsModule } from './fooditems/food-items.module';
 import { OrderItemsModule } from './orderitems/order-items.module';
+import { DashboardModule } from './dashboard/dashboard.module';
+
 @Module({
   imports: [
     DatabaseModule,
@@ -22,7 +24,8 @@ import { OrderItemsModule } from './orderitems/order-items.module';
     CategoriesModule,
     RestaurantsModule,
     FoodItemsModule,
-    OrderItemsModule
+    OrderItemsModule,
+      DashboardModule
   ],
 })
 export class AppModule {}
