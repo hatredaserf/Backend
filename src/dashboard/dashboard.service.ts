@@ -26,6 +26,12 @@ export type FoodBody = {
   availability?: boolean | number | string;
 };
 
+// Demo helper: nothing in this project updates an order's status yet (no kitchen or rider app),
+// so orders move along by their age whenever the customer looks at them:
+//   30 seconds: Preparing, 2 minutes: Out for delivery, 4 minutes: Delivered.
+// Set this to false once real statuses are updated some other way (an admin screen, SQL, a rider app).
+const AUTO_ADVANCE_ORDERS = true;
+
 const MENU_SQL = `
   SELECT f.food_id, f.food_name, f.price, f.availability,
          f.category_id, c.category_name,
@@ -102,7 +108,45 @@ export class DashboardService {
 
   /* ---------- Orders ---------- */
 
+  // Moves this customer's unfinished orders forward by age (see AUTO_ADVANCE_ORDERS)
+  private async advanceOrders(userId: number) {
+    if (!AUTO_ADVANCE_ORDERS) return;
+    const pool = this.pool();
+    const age = 'TIMESTAMPDIFF(SECOND, o.order_date, NOW())';
+
+    await pool.execute(
+      `UPDATE orders o JOIN customer c ON c.customer_id = o.customer_id
+       SET o.order_status = CASE
+             WHEN ${age} >= 240 THEN 'Delivered'
+             WHEN ${age} >= 120 THEN 'Out for delivery'
+             WHEN ${age} >= 30 THEN 'Preparing'
+             ELSE o.order_status END
+       WHERE c.user_id = ? AND o.order_status IN ('Pending', 'Preparing', 'Out for delivery')`,
+      [userId],
+    );
+    // Keep the delivery and payment rows in step with the order
+    await pool.execute(
+      `UPDATE delivery d
+       JOIN orders o ON o.order_id = d.order_id
+       JOIN customer c ON c.customer_id = o.customer_id
+       SET d.delivery_status = o.order_status,
+           d.delivery_date = IF(o.order_status = 'Delivered' AND d.delivery_date IS NULL, NOW(), d.delivery_date)
+       WHERE c.user_id = ? AND o.order_status IN ('Preparing', 'Out for delivery', 'Delivered')
+         AND d.delivery_status <> o.order_status`,
+      [userId],
+    );
+    await pool.execute(
+      `UPDATE payment p
+       JOIN orders o ON o.order_id = p.order_id
+       JOIN customer c ON c.customer_id = o.customer_id
+       SET p.payment_status = 'Paid'
+       WHERE c.user_id = ? AND o.order_status = 'Delivered' AND p.payment_status <> 'Paid'`,
+      [userId],
+    );
+  }
+
   async getMyOrders(userId: number) {
+    await this.advanceOrders(userId);
     const [rows] = await this.pool().execute<RowDataPacket[]>(
       `${MY_ORDERS_SQL} ORDER BY o.order_date DESC, o.order_id DESC`,
       [userId],
@@ -111,6 +155,7 @@ export class DashboardService {
   }
 
   async getMyOrder(userId: number, orderId: number) {
+    await this.advanceOrders(userId);
     // Filtering by the logged-in user means nobody can open someone else's order
     const [rows] = await this.pool().execute<RowDataPacket[]>(`${MY_ORDERS_SQL} AND o.order_id = ?`, [userId, orderId]);
     if (!rows[0]) throw new NotFoundException('Order not found.');
