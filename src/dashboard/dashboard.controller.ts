@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseIntPipe,
@@ -11,7 +12,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { DashboardService } from './dashboard.service';
+import { DashboardService, FoodBody } from './dashboard.service';
 
 // Everything the customer dashboard needs, kept apart from the admin-style CRUD routes:
 //   GET  /my/menu          menu cards (food items with category and restaurant names)
@@ -20,6 +21,8 @@ import { DashboardService } from './dashboard.service';
 //   GET  /my/orders        the logged-in user's own orders
 //   GET  /my/orders/:id    one of their orders, with items
 //   POST /my/orders        place an order
+//   POST /my/menu          add a food item        (PUT /my/menu/:id edits, DELETE /my/menu/:id removes)
+//   GET/POST /my/categories and /my/restaurants   the dropdowns in the add/edit form
 @UseGuards(JwtAuthGuard)
 @Controller('my')
 export class DashboardController {
@@ -69,5 +72,42 @@ export class DashboardController {
     },
   ) {
     return this.dashboardService.placeOrder(this.userId(req), body);
+  }
+
+  /* ---------- Menu editing ---------- */
+
+  @Post('menu')
+  async createFood(@Req() req: any, @Body() body: FoodBody) {
+    return this.dashboardService.createFood(this.userId(req), body);
+  }
+
+  @Put('menu/:id')
+  async updateFood(@Req() req: any, @Param('id', ParseIntPipe) id: number, @Body() body: FoodBody) {
+    return this.dashboardService.updateFood(this.userId(req), id, body);
+  }
+
+  @Delete('menu/:id')
+  async deleteFood(@Req() req: any, @Param('id', ParseIntPipe) id: number) {
+    return this.dashboardService.deleteFood(this.userId(req), id);
+  }
+
+  @Get('categories')
+  async getCategories() {
+    return this.dashboardService.getCategories();
+  }
+
+  @Post('categories')
+  async addCategory(@Req() req: any, @Body() body: { category_name?: string }) {
+    return this.dashboardService.addCategory(this.userId(req), body);
+  }
+
+  @Get('restaurants')
+  async getRestaurants() {
+    return this.dashboardService.getRestaurants();
+  }
+
+  @Post('restaurants')
+  async addRestaurant(@Req() req: any, @Body() body: { restaurant_name?: string; address?: string; phone?: string }) {
+    return this.dashboardService.addRestaurant(this.userId(req), body);
   }
 }

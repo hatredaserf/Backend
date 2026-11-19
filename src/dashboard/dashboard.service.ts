@@ -1,5 +1,8 @@
 import {
   BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  HttpException,
   Injectable,
   NotFoundException,
   UnauthorizedException,
@@ -10,6 +13,26 @@ import type { PoolConnection } from 'mysql2/promise';
 
 const DELIVERY_FEE = 49; // keep in sync with DELIVERY_FEE in the dashboard page
 const PAYMENT_METHODS = ['Cash on delivery', 'GCash', 'Card']; // keep in sync with PAYMENT_METHODS in the dashboard page
+
+// Set to true so only admins (usersx.user_role = 'Admin') can add, edit and delete menu items.
+// Keep it in sync with ONLY_ADMINS_CAN_EDIT_MENU in the dashboard page.
+const ONLY_ADMINS_CAN_EDIT_MENU = false;
+
+export type FoodBody = {
+  food_name?: string;
+  price?: number | string;
+  category_id?: number | string;
+  restaurant_id?: number | string;
+  availability?: boolean | number | string;
+};
+
+const MENU_SQL = `
+  SELECT f.food_id, f.food_name, f.price, f.availability,
+         f.category_id, c.category_name,
+         f.restaurant_id, r.restaurant_name
+  FROM food_item f
+  JOIN category c ON c.category_id = f.category_id
+  JOIN restaurant r ON r.restaurant_id = f.restaurant_id`;
 
 const PROFILE_SQL = `
   SELECT u.user_id, u.username, u.email, u.user_role,
@@ -188,5 +211,127 @@ export class DashboardService {
     } finally {
       conn.release();
     }
+  }
+
+  /* ---------- Menu editing: POST / PUT / DELETE ---------- */
+
+  private async assertCanEdit(userId: number) {
+    if (!ONLY_ADMINS_CAN_EDIT_MENU) return;
+    const [rows] = await this.pool().execute<RowDataPacket[]>('SELECT user_role FROM usersx WHERE user_id = ?', [userId]);
+    if (!rows[0] || String(rows[0].user_role).toLowerCase() !== 'admin') {
+      throw new ForbiddenException('Only admins can change the menu.');
+    }
+  }
+
+  private parseFood(body: FoodBody) {
+    const name = String(body?.food_name ?? '').trim();
+    const price = Number(body?.price);
+    const categoryId = Number(body?.category_id);
+    const restaurantId = Number(body?.restaurant_id);
+    const raw = body?.availability;
+    const available = raw === undefined ? true : raw === true || raw === 1 || raw === '1' || raw === 'true';
+
+    if (!name) throw new BadRequestException('Food name is required.');
+    if (name.length > 100) throw new BadRequestException('Food name must be 100 characters or fewer.');
+    if (body?.price === undefined || body?.price === '' || !Number.isFinite(price) || price < 0) {
+      throw new BadRequestException('Price must be a number of 0 or more.');
+    }
+    if (!Number.isInteger(categoryId) || categoryId <= 0) throw new BadRequestException('Pick a category.');
+    if (!Number.isInteger(restaurantId) || restaurantId <= 0) throw new BadRequestException('Pick a restaurant.');
+
+    return { name, price, categoryId, restaurantId, available };
+  }
+
+  private async findFood(foodId: number) {
+    const [rows] = await this.pool().execute<RowDataPacket[]>(`${MENU_SQL} WHERE f.food_id = ?`, [foodId]);
+    if (!rows[0]) throw new NotFoundException('Food item not found.');
+    return rows[0];
+  }
+
+  async createFood(userId: number, body: FoodBody) {
+    await this.assertCanEdit(userId);
+    const f = this.parseFood(body);
+    try {
+      const [result] = await this.pool().execute<ResultSetHeader>(
+        'INSERT INTO food_item (restaurant_id, category_id, food_name, price, availability) VALUES (?, ?, ?, ?, ?)',
+        [f.restaurantId, f.categoryId, f.name, f.price, f.available ? 1 : 0],
+      );
+      return this.findFood(result.insertId);
+    } catch (err: any) {
+      if (err instanceof HttpException) throw err;
+      if (err?.code === 'ER_NO_REFERENCED_ROW_2') throw new BadRequestException('Pick a valid category and restaurant.');
+      throw err;
+    }
+  }
+
+  async updateFood(userId: number, foodId: number, body: FoodBody) {
+    await this.assertCanEdit(userId);
+    const f = this.parseFood(body);
+    try {
+      const [result] = await this.pool().execute<ResultSetHeader>(
+        'UPDATE food_item SET restaurant_id = ?, category_id = ?, food_name = ?, price = ?, availability = ? WHERE food_id = ?',
+        [f.restaurantId, f.categoryId, f.name, f.price, f.available ? 1 : 0, foodId],
+      );
+      if (result.affectedRows === 0) throw new NotFoundException('Food item not found.');
+      return this.findFood(foodId);
+    } catch (err: any) {
+      if (err instanceof HttpException) throw err;
+      if (err?.code === 'ER_NO_REFERENCED_ROW_2') throw new BadRequestException('Pick a valid category and restaurant.');
+      throw err;
+    }
+  }
+
+  async deleteFood(userId: number, foodId: number) {
+    await this.assertCanEdit(userId);
+    try {
+      const [result] = await this.pool().execute<ResultSetHeader>('DELETE FROM food_item WHERE food_id = ?', [foodId]);
+      if (result.affectedRows === 0) throw new NotFoundException('Food item not found.');
+      return { message: 'Food item deleted.' };
+    } catch (err: any) {
+      if (err instanceof HttpException) throw err;
+      if (err?.code === 'ER_ROW_IS_REFERENCED_2') {
+        throw new ConflictException("This item is part of past orders, so it can't be deleted. Mark it as sold out instead.");
+      }
+      throw err;
+    }
+  }
+
+  /* ---------- Categories and restaurants (for the add/edit form) ---------- */
+
+  async getCategories() {
+    const [rows] = await this.pool().execute<RowDataPacket[]>('SELECT category_id, category_name FROM category ORDER BY category_name');
+    return rows;
+  }
+
+  async addCategory(userId: number, body: { category_name?: string }) {
+    await this.assertCanEdit(userId);
+    const name = String(body?.category_name ?? '').trim();
+    if (!name) throw new BadRequestException('Category name is required.');
+    if (name.length > 50) throw new BadRequestException('Category name must be 50 characters or fewer.');
+    const [result] = await this.pool().execute<ResultSetHeader>('INSERT INTO category (category_name) VALUES (?)', [name]);
+    return { category_id: result.insertId, category_name: name };
+  }
+
+  async getRestaurants() {
+    const [rows] = await this.pool().execute<RowDataPacket[]>(
+      'SELECT restaurant_id, restaurant_name, address, phone FROM restaurant ORDER BY restaurant_name',
+    );
+    return rows;
+  }
+
+  async addRestaurant(userId: number, body: { restaurant_name?: string; address?: string; phone?: string }) {
+    await this.assertCanEdit(userId);
+    const name = String(body?.restaurant_name ?? '').trim();
+    const address = String(body?.address ?? '').trim();
+    const phone = String(body?.phone ?? '').trim();
+    if (!name) throw new BadRequestException('Restaurant name is required.');
+    if (name.length > 100) throw new BadRequestException('Restaurant name must be 100 characters or fewer.');
+    if (address.length > 255) throw new BadRequestException('The address must be 255 characters or fewer.');
+    if (phone.length > 20) throw new BadRequestException('The phone number must be 20 characters or fewer.');
+    const [result] = await this.pool().execute<ResultSetHeader>(
+      'INSERT INTO restaurant (restaurant_name, address, phone) VALUES (?, ?, ?)',
+      [name, address || null, phone || null],
+    );
+    return { restaurant_id: result.insertId, restaurant_name: name };
   }
 }
