@@ -16,7 +16,7 @@ const PAYMENT_METHODS = ['Cash on delivery', 'GCash', 'Card']; // keep in sync w
 
 // Set to true so only admins (usersx.user_role = 'Admin') can add, edit and delete menu items.
 // Keep it in sync with ONLY_ADMINS_CAN_EDIT_MENU in the dashboard page.
-const ONLY_ADMINS_CAN_EDIT_MENU = false;
+const ONLY_ADMINS_CAN_EDIT_MENU = true;
 
 export type FoodBody = {
   food_name?: string;
