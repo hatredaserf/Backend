@@ -5,6 +5,7 @@ import {
   Get,
   Param,
   ParseIntPipe,
+  Patch,
   Post,
   Put,
   Req,
@@ -109,5 +110,22 @@ export class DashboardController {
   @Post('restaurants')
   async addRestaurant(@Req() req: any, @Body() body: { restaurant_name?: string; address?: string; phone?: string }) {
     return this.dashboardService.addRestaurant(this.userId(req), body);
+  }
+
+  /* ---------- Admin: all orders (admins only, checked in the service) ---------- */
+
+  @Get('admin/orders')
+  async getAllOrders(@Req() req: any) {
+    return this.dashboardService.getAllOrders(this.userId(req));
+  }
+
+  @Get('admin/orders/:id')
+  async getOrderAdmin(@Req() req: any, @Param('id', ParseIntPipe) id: number) {
+    return this.dashboardService.getOrderAdmin(this.userId(req), id);
+  }
+
+  @Patch('admin/orders/:id/status')
+  async setOrderStatus(@Req() req: any, @Param('id', ParseIntPipe) id: number, @Body() body: { status?: string }) {
+    return this.dashboardService.setOrderStatus(this.userId(req), id, String(body?.status ?? ''));
   }
 }

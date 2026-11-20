@@ -24,6 +24,7 @@ export type FoodBody = {
   category_id?: number | string;
   restaurant_id?: number | string;
   availability?: boolean | number | string;
+  image_url?: string | null;
 };
 
 // Demo helper: nothing in this project updates an order's status yet (no kitchen or rider app),
@@ -35,10 +36,23 @@ const AUTO_ADVANCE_ORDERS = true;
 const MENU_SQL = `
   SELECT f.food_id, f.food_name, f.price, f.availability,
          f.category_id, c.category_name,
-         f.restaurant_id, r.restaurant_name
+         f.restaurant_id, r.restaurant_name, f.image_url
   FROM food_item f
   JOIN category c ON c.category_id = f.category_id
   JOIN restaurant r ON r.restaurant_id = f.restaurant_id`;
+
+const ORDER_STATUSES = ['Pending', 'Preparing', 'Out for delivery', 'Delivered', 'Cancelled'];
+
+const ALL_ORDERS_SQL = `
+  SELECT o.order_id, o.order_date, o.total_amount, o.order_status,
+         c.name AS customer_name, c.phone AS customer_phone,
+         d.delivery_address, d.delivery_status,
+         p.payment_method, p.payment_status,
+         (SELECT COALESCE(SUM(oi.quantity), 0) FROM order_item oi WHERE oi.order_id = o.order_id) AS item_count
+  FROM orders o
+  JOIN customer c ON c.customer_id = o.customer_id
+  LEFT JOIN delivery d ON d.order_id = o.order_id
+  LEFT JOIN payment p ON p.order_id = o.order_id`;
 
 const PROFILE_SQL = `
   SELECT u.user_id, u.username, u.email, u.user_role,
@@ -67,15 +81,7 @@ export class DashboardService {
   /* ---------- Menu ---------- */
 
   async getMenu() {
-    const [rows] = await this.pool().execute<RowDataPacket[]>(
-      `SELECT f.food_id, f.food_name, f.price, f.availability,
-              f.category_id, c.category_name,
-              f.restaurant_id, r.restaurant_name
-       FROM food_item f
-       JOIN category c ON c.category_id = f.category_id
-       JOIN restaurant r ON r.restaurant_id = f.restaurant_id
-       ORDER BY f.food_id`,
-    );
+    const [rows] = await this.pool().execute<RowDataPacket[]>(`${MENU_SQL} ORDER BY f.food_id`);
     return rows;
   }
 
@@ -114,14 +120,13 @@ export class DashboardService {
     const pool = this.pool();
     const age = 'TIMESTAMPDIFF(SECOND, o.order_date, NOW())';
 
+    const target = `CASE WHEN ${age} >= 240 THEN 'Delivered' WHEN ${age} >= 120 THEN 'Out for delivery' WHEN ${age} >= 30 THEN 'Preparing' ELSE o.order_status END`;
+    const rank = (x: string) => `FIELD(${x}, 'Pending', 'Preparing', 'Out for delivery', 'Delivered')`;
     await pool.execute(
       `UPDATE orders o JOIN customer c ON c.customer_id = o.customer_id
-       SET o.order_status = CASE
-             WHEN ${age} >= 240 THEN 'Delivered'
-             WHEN ${age} >= 120 THEN 'Out for delivery'
-             WHEN ${age} >= 30 THEN 'Preparing'
-             ELSE o.order_status END
-       WHERE c.user_id = ? AND o.order_status IN ('Pending', 'Preparing', 'Out for delivery')`,
+       SET o.order_status = ${target}
+       WHERE c.user_id = ? AND o.order_status IN ('Pending', 'Preparing', 'Out for delivery')
+         AND ${rank('o.order_status')} < ${rank(target)}`,
       [userId],
     );
     // Keep the delivery and payment rows in step with the order
@@ -284,7 +289,11 @@ export class DashboardService {
     if (!Number.isInteger(categoryId) || categoryId <= 0) throw new BadRequestException('Pick a category.');
     if (!Number.isInteger(restaurantId) || restaurantId <= 0) throw new BadRequestException('Pick a restaurant.');
 
-    return { name, price, categoryId, restaurantId, available };
+    const image = String(body?.image_url ?? '').trim();
+    if (image && !/^https?:\/\//i.test(image)) throw new BadRequestException('The photo link must start with http:// or https://.');
+    if (image.length > 500) throw new BadRequestException('The photo link must be 500 characters or fewer.');
+
+    return { name, price, categoryId, restaurantId, available, image: image || null };
   }
 
   private async findFood(foodId: number) {
@@ -298,8 +307,8 @@ export class DashboardService {
     const f = this.parseFood(body);
     try {
       const [result] = await this.pool().execute<ResultSetHeader>(
-        'INSERT INTO food_item (restaurant_id, category_id, food_name, price, availability) VALUES (?, ?, ?, ?, ?)',
-        [f.restaurantId, f.categoryId, f.name, f.price, f.available ? 1 : 0],
+        'INSERT INTO food_item (restaurant_id, category_id, food_name, price, availability, image_url) VALUES (?, ?, ?, ?, ?, ?)',
+        [f.restaurantId, f.categoryId, f.name, f.price, f.available ? 1 : 0, f.image],
       );
       return this.findFood(result.insertId);
     } catch (err: any) {
@@ -314,8 +323,8 @@ export class DashboardService {
     const f = this.parseFood(body);
     try {
       const [result] = await this.pool().execute<ResultSetHeader>(
-        'UPDATE food_item SET restaurant_id = ?, category_id = ?, food_name = ?, price = ?, availability = ? WHERE food_id = ?',
-        [f.restaurantId, f.categoryId, f.name, f.price, f.available ? 1 : 0, foodId],
+        'UPDATE food_item SET restaurant_id = ?, category_id = ?, food_name = ?, price = ?, availability = ?, image_url = ? WHERE food_id = ?',
+        [f.restaurantId, f.categoryId, f.name, f.price, f.available ? 1 : 0, f.image, foodId],
       );
       if (result.affectedRows === 0) throw new NotFoundException('Food item not found.');
       return this.findFood(foodId);
@@ -378,5 +387,62 @@ export class DashboardService {
       [name, address || null, phone || null],
     );
     return { restaurant_id: result.insertId, restaurant_name: name };
+  }
+
+  /* ---------- Admin: manage every customer's orders ---------- */
+
+  private async assertAdmin(userId: number) {
+    const [rows] = await this.pool().execute<RowDataPacket[]>('SELECT user_role FROM usersx WHERE user_id = ?', [userId]);
+    if (!rows[0] || String(rows[0].user_role).toLowerCase() !== 'admin') {
+      throw new ForbiddenException('Only admins can do that.');
+    }
+  }
+
+  async getAllOrders(userId: number) {
+    await this.assertAdmin(userId);
+    const [rows] = await this.pool().execute<RowDataPacket[]>(`${ALL_ORDERS_SQL} ORDER BY o.order_date DESC, o.order_id DESC`);
+    return rows;
+  }
+
+  async getOrderAdmin(userId: number, orderId: number) {
+    await this.assertAdmin(userId);
+    const [rows] = await this.pool().execute<RowDataPacket[]>(`${ALL_ORDERS_SQL} WHERE o.order_id = ?`, [orderId]);
+    if (!rows[0]) throw new NotFoundException('Order not found.');
+    const [items] = await this.pool().execute<RowDataPacket[]>(
+      `SELECT oi.food_id, f.food_name, oi.quantity, oi.subtotal
+       FROM order_item oi JOIN food_item f ON f.food_id = oi.food_id
+       WHERE oi.order_id = ?`,
+      [orderId],
+    );
+    return { ...rows[0], items };
+  }
+
+  async setOrderStatus(userId: number, orderId: number, status: string) {
+    await this.assertAdmin(userId);
+    if (!ORDER_STATUSES.includes(status)) throw new BadRequestException('Pick a valid status.');
+
+    // The delivery table has no 'Pending', so a new order is 'Preparing' there
+    const deliveryStatus = status === 'Pending' ? 'Preparing' : status;
+
+    const conn = await this.pool().getConnection();
+    try {
+      await conn.beginTransaction();
+      const [result] = await conn.query<ResultSetHeader>('UPDATE orders SET order_status = ? WHERE order_id = ?', [status, orderId]);
+      if (result.affectedRows === 0) throw new NotFoundException('Order not found.');
+      await conn.query(
+        "UPDATE delivery SET delivery_status = ?, delivery_date = IF(? = 'Delivered', NOW(), delivery_date) WHERE order_id = ?",
+        [deliveryStatus, status, orderId],
+      );
+      if (status === 'Delivered') await conn.query("UPDATE payment SET payment_status = 'Paid' WHERE order_id = ?", [orderId]);
+      await conn.commit();
+    } catch (err) {
+      await conn.rollback();
+      throw err;
+    } finally {
+      conn.release();
+    }
+
+    const [rows] = await this.pool().execute<RowDataPacket[]>(`${ALL_ORDERS_SQL} WHERE o.order_id = ?`, [orderId]);
+    return rows[0];
   }
 }
